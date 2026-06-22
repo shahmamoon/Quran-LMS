@@ -1,0 +1,54 @@
+name: 🗂️ Split AI Fundamentals into Weeks (production)
+
+# Manual only. Reads the current live lesson order and splits the single
+# "AI Fundamentals" module into 12 weeks (2 lessons each, week 12 gets 1).
+# Exits without changes if the subject already has more than one week.
+on:
+  workflow_dispatch:
+
+jobs:
+  split:
+    name: Split AI Fundamentals into weeks
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Run split via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GH_SHA,GHCR_TOKEN,GH_REPO
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "📥 Fetching split script from GitHub ..."
+            mkdir -p scripts
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/scripts/split-ai-fundamentals-weeks.ts" \
+              -o scripts/split-ai-fundamentals-weeks.ts
+
+            echo "🗂️ Splitting into weeks ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -v "$(pwd)/scripts:/app/scripts" \
+              app \
+              node_modules/.bin/tsx scripts/split-ai-fundamentals-weeks.ts
+
+            echo "✅ Split complete!"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## AI Fundamentals Split ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- AI Fundamentals reorganised into 12 weeks (2 lessons each; week 12 has 1)" >> $GITHUB_STEP_SUMMARY
+          echo "- Current live lesson order was preserved" >> $GITHUB_STEP_SUMMARY

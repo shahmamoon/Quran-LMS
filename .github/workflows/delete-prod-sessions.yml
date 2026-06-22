@@ -1,0 +1,35 @@
+name: 🗑️ Delete All Prod Sessions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  delete-sessions:
+    name: Delete sessions from prod DB
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete sessions via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN
+          script: |
+            set -e
+
+            echo "🗑️  Deleting attendances and sessions from prod..."
+
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run --project quranacademy --config prd -- sh -c '
+              CLEAN_URL=$(echo "$DATABASE_URL" | sed "s/?.*//")
+              docker exec n8n-postgres-1 psql "$CLEAN_URL" -c "
+                DELETE FROM \"SessionAttendance\";
+                DELETE FROM \"Session\";
+                SELECT COUNT(*) AS remaining_sessions FROM \"Session\";
+              "
+            '
+
+            echo "✅ Done"

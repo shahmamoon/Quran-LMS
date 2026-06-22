@@ -1,0 +1,53 @@
+name: 📝 Seed Blog Posts (production)
+
+# Manual only. Idempotent + non-destructive — upserts starter blog
+# articles by slug. Safe to run any time on production.
+on:
+  workflow_dispatch:
+
+jobs:
+  seed-blog:
+    name: Upsert starter blog posts
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Seed blog via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GH_SHA,GHCR_TOKEN,GH_REPO
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "📥 Fetching blog seed script from GitHub ..."
+            mkdir -p scripts
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/scripts/seed-blog-posts.ts" \
+              -o scripts/seed-blog-posts.ts
+
+            echo "📝 Seeding blog posts ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -v "$(pwd)/scripts:/app/scripts" \
+              app \
+              node_modules/.bin/tsx scripts/seed-blog-posts.ts
+
+            echo "✅ Blog seed complete!"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Blog Seed ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Upserted starter SEO articles into production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Blog:** https://quranacademy.com/blog" >> $GITHUB_STEP_SUMMARY

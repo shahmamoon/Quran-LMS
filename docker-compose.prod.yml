@@ -1,0 +1,87 @@
+# ═══════════════════════════════════════════════════════════════
+#  Online Quran Academy — Production Docker Compose
+#
+#  Runs alongside the existing buildaiwithus app on the same VPS:
+#    • Port 4002 (buildaiwithus uses 4000, demo uses 4001)
+#    • Container: quranacademy-app
+#    • Database:  quranacademy (separate from buildaiwithus DB)
+#    • Caddy:     quranacademy.com → localhost:4002
+#
+#  Reuses existing VPS infrastructure:
+#    • Caddy  → n8n-caddy-1   (host network, handles SSL)
+#    • Postgres → aitechservices-n8n-postgres-1  (on aitechservices-n8n_default network)
+#
+#  Secrets injected by Doppler:
+#    DOPPLER_TOKEN=xxx doppler run -- docker compose -f docker-compose.prod.yml up -d
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  app:
+    image: ghcr.io/muddsarn8n-lgtm/quranacademy:latest
+    container_name: quranacademy-app
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: ${PORT:-4000}
+      DATABASE_URL: ${DATABASE_URL}
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-2h}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      # App URL
+      CLIENT_URL: ${CLIENT_URL}
+      # Email
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+      # Zoom
+      ZOOM_ACCOUNT_ID: ${ZOOM_ACCOUNT_ID}
+      ZOOM_CLIENT_ID: ${ZOOM_CLIENT_ID}
+      ZOOM_CLIENT_SECRET: ${ZOOM_CLIENT_SECRET}
+      # Per-teacher Zoom OAuth (optional)
+      ZOOM_OAUTH_CLIENT_ID: ${ZOOM_OAUTH_CLIENT_ID:-}
+      ZOOM_OAUTH_CLIENT_SECRET: ${ZOOM_OAUTH_CLIENT_SECRET:-}
+      ZOOM_REDIRECT_URI: ${ZOOM_REDIRECT_URI:-}
+      # Google Calendar / Meet OAuth (optional)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # Stripe payments (optional)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Cloudflare R2 for session recordings (optional)
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_REGION: ${R2_REGION:-auto}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      # Daily.co (optional)
+      DAILY_API_KEY: ${DAILY_API_KEY:-}
+      DAILY_WEBHOOK_SECRET: ${DAILY_WEBHOOK_SECRET:-}
+    volumes:
+      - quranacademy_uploads:/app/uploads
+    # Port 4002 — does not conflict with buildaiwithus (4000) or demo (4001)
+    ports:
+      - "127.0.0.1:4002:4000"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - aitechservices-n8n_default
+
+volumes:
+  quranacademy_uploads:
+
+networks:
+  aitechservices-n8n_default:
+    external: true

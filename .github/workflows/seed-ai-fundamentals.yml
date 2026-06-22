@@ -1,0 +1,53 @@
+name: 📚 Seed AI Fundamentals (production)
+
+# Manual only. Idempotent + non-destructive — upserts the "AI Fundamentals"
+# subject and its lessons. Safe to run any time on production.
+on:
+  workflow_dispatch:
+
+jobs:
+  seed-ai-fundamentals:
+    name: Add AI Fundamentals subject + lessons
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Seed via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GH_SHA,GHCR_TOKEN,GH_REPO
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "📥 Fetching seed script from GitHub ..."
+            mkdir -p scripts
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/scripts/seed-ai-fundamentals.ts" \
+              -o scripts/seed-ai-fundamentals.ts
+
+            echo "📚 Seeding AI Fundamentals ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -v "$(pwd)/scripts:/app/scripts" \
+              app \
+              node_modules/.bin/tsx scripts/seed-ai-fundamentals.ts
+
+            echo "✅ AI Fundamentals seed complete!"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## AI Fundamentals Seed ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Subject **AI Fundamentals** with 23 lessons upserted into production" >> $GITHUB_STEP_SUMMARY
+          echo "- Reorder lessons from the subject page (Move up / down)" >> $GITHUB_STEP_SUMMARY

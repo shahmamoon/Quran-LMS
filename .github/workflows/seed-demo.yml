@@ -1,0 +1,47 @@
+name: 🌱 Reseed Demo Database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reseed-demo:
+    name: 🌱 Wipe + Reseed Demo DB
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Reseed via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN_DEMO: ${{ secrets.DOPPLER_TOKEN_DEMO }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN_DEMO
+          script: |
+            set -e
+            cd /opt/quranacademy-demo
+            echo "🌱 Wiping and reseeding demo database ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+              docker compose -f docker-compose.demo.yml run --rm app \
+              node_modules/.bin/tsx prisma/seed.ts
+            echo "✅ Demo reseed complete!"
+            echo ""
+            echo "Demo credentials:"
+            echo "  Admin:   admin@quranacademy.com   / Admin@123!"
+            echo "  Teacher: teacher@quranacademy.com / Teacher@123!"
+            echo "  Student: student@quranacademy.com / Student@123!"
+
+      - name: Reseed summary
+        if: always()
+        run: |
+          echo "## Demo Reseed ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://demo.quranacademy.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **DB:** \`quranacademy_demo\` — wiped and recreated with fresh seed data" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Demo credentials:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Admin: \`admin@quranacademy.com\` / \`Admin@123!\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Teacher: \`teacher@quranacademy.com\` / \`Teacher@123!\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Student: \`student@quranacademy.com\` / \`Student@123!\`" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,1046 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum SessionStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum LessonType {
+  VIDEO
+  TEXT
+  QUIZ
+  ASSIGNMENT
+}
+
+enum MessageType {
+  TEXT
+  FILE
+  SYSTEM
+}
+
+enum QuizType {
+  QUIZ
+  EXAM
+}
+
+enum QuizStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum SubmissionStatus {
+  PENDING
+  GRADING
+  GRADED
+}
+
+enum PaymentType {
+  ONE_TIME
+  SUBSCRIPTION
+}
+
+enum PaymentStatus {
+  PENDING   // checkout session created, not yet paid
+  PAID      // one-time paid OR subscription active
+  PAST_DUE  // subscription renewal charge failed; Stripe is retrying (dunning)
+  FAILED    // one-time payment failed
+  EXPIRED   // checkout session expired unpaid
+  ENDED     // subscription ended (end date reached or dunning exhausted)
+  CANCELLED // admin cancelled the subscription early
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+// Content-engine topic queue: each row is one article the agent will draft.
+enum TopicStatus {
+  QUEUED    // waiting to be picked
+  DRAFTING  // claimed by a run, draft in progress
+  DRAFTED   // draft Post created, awaiting human review/publish
+  PUBLISHED // approved via email and published live
+  ERROR     // last run failed; see lastError
+}
+
+// ─── User ─────────────────────────────────────────────────────
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  passwordHash     String
+  firstName        String
+  lastName         String
+  role             Role      @default(STUDENT)
+  avatarUrl        String?
+  bio              String?
+  phone            String?
+  grade            String?   // students only: "Kindergarten", "Grade 1"…"Grade 12", or "Upskill"
+  status           UserStatus @default(ACTIVE)
+  emailVerified    Boolean   @default(false)
+  refreshToken     String?
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  zoomAccessToken    String?   @db.Text
+  zoomRefreshToken   String?   @db.Text
+  zoomTokenExpiry    DateTime?
+  googleAccessToken  String?   @db.Text
+  googleRefreshToken String?   @db.Text
+  googleTokenExpiry  DateTime?
+  lastSeenAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  teachingSubjects    SubjectTeacher[]          @relation("TeacherSubjects")
+  enrolledSubjects    StudentSubject[]
+  assignedStudents    StudentSubject[]          @relation("StudentEnrollmentTeacher")
+  enrolledOthers      StudentSubject[]          @relation("StudentEnrollmentEnrolledBy")
+  groupMemberships    GroupMember[]
+  sessionsAsHost      Session[]                 @relation("HostSessions")
+  createdGroups       Group[]                   @relation("CreatedGroups")
+  sessionAttendances  SessionAttendance[]
+  lessonProgress      LessonProgress[]
+  sentMessages        Message[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  conversations       ConversationParticipant[]
+  userSettings        UserSetting[]
+  teacherQuizzes      Quiz[]                    @relation("TeacherQuizzes")
+  quizAssignments     QuizAssignment[]          @relation("StudentQuizAssignments")
+  quizSubmissions     QuizSubmission[]          @relation("StudentQuizSubmissions")
+  posts               Post[]                    @relation("AuthorPosts")
+  payments            Payment[]                 @relation("StudentPayments")
+
+  // Quran recitation
+  recitationSessionsAsStudent RecitationSession[]   @relation("StudentRecitationSessions")
+  recitationSessionsAsTeacher RecitationSession[]   @relation("TeacherRecitationSessions")
+  pageAttemptsAsStudent       PageAttempt[]         @relation("StudentPageAttempts")
+  pageAttemptsAsTeacher       PageAttempt[]         @relation("TeacherPageAttempts")
+
+  // Quran Reader
+  quranProgress           QuranStudentProgress?  @relation("StudentQuranProgress")
+  quranProgressAsTeacher  QuranStudentProgress[] @relation("TeacherLastTaught")
+  quranBookmarksAsTeacher QuranBookmark[]        @relation("TeacherBookmarks")
+  quranBookmarksAsStudent QuranBookmark[]        @relation("StudentBookmarks")
+
+  // Qaida Module
+  qaidaProgressAsStudent  QaidaStudentProgress[] @relation("QaidaStudentProgress")
+  qaidaProgressAsTeacher  QaidaStudentProgress[] @relation("QaidaTeacherProgress")
+  qaidaBookmarksAsTeacher QaidaBookmark[]        @relation("QaidaTeacherBookmarks")
+  qaidaBookmarksAsStudent QaidaBookmark[]        @relation("QaidaStudentBookmarks")
+  qaidaNotesAsTeacher     QaidaLessonNote[]      @relation("QaidaTeacherNotes")
+  qaidaNotesAsStudent     QaidaLessonNote[]      @relation("QaidaStudentNotes")
+  qaidaHistoryAsTeacher   QaidaLessonHistory[]   @relation("QaidaTeacherHistory")
+  qaidaHistoryAsStudent   QaidaLessonHistory[]   @relation("QaidaStudentHistory")
+
+  // Islamic Learning Module
+  islamicProgressAsStudent  IslamicProgress[]  @relation("IslamicProgressStudent")
+  islamicProgressAsTeacher  IslamicProgress[]  @relation("IslamicProgressTeacher")
+  islamicBookmarksAsStudent IslamicBookmark[]  @relation("IslamicBookmarkStudent")
+  islamicBookmarksAsTeacher IslamicBookmark[]  @relation("IslamicBookmarkTeacher")
+
+  @@index([email])
+  @@index([role])
+}
+
+// ─── Subject ──────────────────────────────────────────────────
+
+enum CourseType {
+  NOORANI_QAIDA
+  QURAN_LEARNING
+  ISLAMIC_LEARNING
+}
+
+model Subject {
+  id           String      @id @default(cuid())
+  title        String
+  description  String?
+  grade        String?     // "Kindergarten", "Grade 1"…"Grade 12", "Upskill", or null (visible to all)
+  thumbnailUrl String?
+  color        String      @default("#0e91e9")
+  courseType   CourseType?
+  isPublished  Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  teachers      SubjectTeacher[]
+  weeks         Week[]
+  sessions      Session[]
+  groupSubjects GroupSubject[]
+  enrollments   StudentSubject[]
+  quizzes       Quiz[]
+}
+
+model SubjectTeacher {
+  subjectId  String
+  teacherId  String
+  assignedAt DateTime @default(now())
+  subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher    User     @relation("TeacherSubjects", fields: [teacherId], references: [id])
+
+  @@id([subjectId, teacherId])
+  @@index([teacherId])
+  @@index([subjectId])
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  DROPPED
+}
+
+model StudentSubject {
+  userId       String
+  user         User             @relation(fields: [userId], references: [id])
+  subjectId    String
+  subject      Subject          @relation(fields: [subjectId], references: [id])
+  teacherId    String?
+  teacher      User?            @relation("StudentEnrollmentTeacher", fields: [teacherId], references: [id])
+  enrolledById String?
+  enrolledBy   User?            @relation("StudentEnrollmentEnrolledBy", fields: [enrolledById], references: [id])
+  status       EnrollmentStatus @default(ACTIVE)
+  enrolledAt   DateTime         @default(now())
+  completedAt  DateTime?
+
+  @@id([userId, subjectId])
+  @@index([userId])
+  @@index([subjectId])
+  @@index([teacherId])
+  @@index([enrolledById])
+}
+
+// ─── Curriculum ───────────────────────────────────────────────
+
+model Week {
+  id          String   @id @default(cuid())
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  order       Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lessons Lesson[]
+
+  @@unique([subjectId, order])
+  @@index([subjectId])
+}
+
+model Lesson {
+  id          String     @id @default(cuid())
+  weekId      String
+  week        Week       @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  title       String
+  type        LessonType @default(TEXT)
+  content     String?    @db.Text
+  videoUrl    String?
+  duration    Int?
+  order       Int
+  isPublished Boolean    @default(false)
+  objectives  String[]   @default([])
+  resources   Json?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  progress LessonProgress[]
+
+  @@unique([weekId, order])
+  @@index([weekId])
+}
+
+model LessonProgress {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  lessonId    String
+  lesson      Lesson   @relation(fields: [lessonId], references: [id])
+  completedAt DateTime @default(now())
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@index([lessonId])
+}
+
+// ─── Groups ───────────────────────────────────────────────────
+
+model Group {
+  id            String   @id @default(cuid())
+  name          String
+  description   String?
+  createdById   String?
+  createdBy     User?    @relation("CreatedGroups", fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  members         GroupMember[]
+  subjects        GroupSubject[]
+  conversations   Conversation[]
+  sessions        Session[]
+  quizAssignments QuizAssignment[]
+
+  @@index([createdById])
+}
+
+model GroupMember {
+  id       String   @id @default(cuid())
+  groupId  String
+  group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id])
+  joinedAt DateTime @default(now())
+
+  @@unique([groupId, userId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+model GroupSubject {
+  groupId   String
+  group     Group   @relation(fields: [groupId], references: [id])
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  @@id([groupId, subjectId])
+}
+
+// ─── Sessions (Zoom) ─────────────────────────────────────────
+
+model Session {
+  id              String        @id @default(cuid())
+  title           String
+  description     String?
+  subjectId       String?
+  subject         Subject?      @relation(fields: [subjectId], references: [id])
+  groupId         String?
+  group           Group?        @relation(fields: [groupId], references: [id])
+  hostId          String
+  host            User          @relation("HostSessions", fields: [hostId], references: [id])
+  scheduledAt     DateTime
+  durationMinutes Int           @default(60)
+  status          SessionStatus @default(SCHEDULED)
+  zoomMeetingId          String?  @unique
+  zoomJoinUrl            String?
+  zoomStartUrl           String?
+  zoomPassword           String?
+  googleCalendarEventId  String?
+  dailyRoomName          String?
+  recordingUrl           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  attendances SessionAttendance[]
+
+  @@index([hostId])
+  @@index([subjectId])
+  @@index([groupId])
+  @@index([scheduledAt])
+  @@index([status])
+}
+
+model SessionAttendance {
+  id        String    @id @default(cuid())
+  sessionId String
+  session   Session   @relation(fields: [sessionId], references: [id])
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime?
+
+  @@unique([sessionId, userId])
+  @@index([sessionId])
+  @@index([userId])
+}
+
+// ─── Chat ─────────────────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(cuid())
+  name      String?
+  isGroup   Boolean  @default(false)
+  groupId   String?
+  group     Group?   @relation(fields: [groupId], references: [id])
+  createdAt DateTime @default(now())
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@index([groupId])
+}
+
+model ConversationParticipant {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  lastReadAt     DateTime?
+
+  @@id([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id])
+  type           MessageType  @default(TEXT)
+  content        String
+  fileUrl        String?
+  createdAt      DateTime     @default(now())
+  editedAt       DateTime?
+  deletedAt      DateTime?
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+}
+
+// ─── Notifications ────────────────────────────────────────────
+
+model Notification {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  title      String
+  body       String
+  type       String
+  link       String?
+  isRead     Boolean   @default(false)
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@index([userId, archivedAt])
+}
+
+// ─── Settings ─────────────────────────────────────────────────
+
+model Setting {
+  key       String   @id
+  value     String
+  isPublic  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+model UserSetting {
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  key    String
+  value  String
+
+  @@id([userId, key])
+  @@index([userId])
+}
+
+// ─── Audit Logs ───────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  resource   String
+  resourceId String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ─── Quizzes & Exams ─────────────────────────────────────────
+
+model Quiz {
+  id           String     @id @default(cuid())
+  title        String
+  type         QuizType   @default(QUIZ)
+  subjectId    String
+  subject      Subject    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacherId    String
+  teacher      User       @relation("TeacherQuizzes", fields: [teacherId], references: [id])
+  instructions String?    @db.Text
+  // JSON array of QuizQuestion: { id, questionNumber, type, question, options?, marks, expectedAnswer }
+  questions    Json
+  totalMarks   Float      @default(0)
+  durationMin  Int?       // optional time limit in minutes; null = untimed
+  status       QuizStatus @default(DRAFT)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  assignments QuizAssignment[]
+  submissions QuizSubmission[]
+
+  @@index([teacherId])
+  @@index([subjectId])
+  @@index([status])
+}
+
+model QuizAssignment {
+  id         String    @id @default(cuid())
+  quizId     String
+  quiz       Quiz      @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  // Either groupId OR studentId is set — never both, never neither
+  groupId    String?
+  group      Group?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  studentId  String?
+  student    User?     @relation("StudentQuizAssignments", fields: [studentId], references: [id], onDelete: Cascade)
+  dueDate    DateTime?
+  assignedAt DateTime  @default(now())
+
+  @@index([quizId])
+  @@index([groupId])
+  @@index([studentId])
+}
+
+model QuizSubmission {
+  id             String           @id @default(cuid())
+  quizId         String
+  quiz           Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  studentId      String
+  student        User             @relation("StudentQuizSubmissions", fields: [studentId], references: [id])
+  // JSON array of QuizAnswer: { questionId, answer, score?, feedback? }
+  answers        Json
+  attachmentUrl  String?          // path to uploaded file (served via /uploads/)
+  attachmentText String?          @db.Text // text extracted from uploaded PDF for AI grading
+  status         SubmissionStatus @default(PENDING)
+  score          Float?           // total marks awarded by AI
+  maxScore       Float?           // = quiz.totalMarks at submission time
+  aiFeedback     String?          @db.Text // overall AI feedback
+  submittedAt    DateTime         @default(now())
+  gradedAt       DateTime?
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([quizId, studentId])
+  @@index([quizId])
+  @@index([studentId])
+  @@index([status])
+  @@index([quizId, status]) // compound: teacher views submissions by quiz + status
+}
+
+// ─── Blog Post ────────────────────────────────────────────────
+// Powers the public, server-rendered blog at /blog and /blog/:slug.
+// Server-rendered (not the React SPA) so content + meta + JSON-LD are
+// visible to search crawlers and AI models (GEO/SEO). See server/blog/.
+
+model Post {
+  id              String     @id @default(cuid())
+  slug            String     @unique // URL segment, e.g. "what-age-should-kids-learn-ai"
+  title           String
+  excerpt         String?    @db.Text // short summary for listings + meta description fallback
+  content         String     @db.Text // body in Markdown
+  coverImage      String?    // absolute or /-relative image URL for OG + hero
+  metaTitle       String?    // overrides <title> if set; falls back to title
+  metaDescription String?    @db.Text // overrides meta description; falls back to excerpt
+  keywords        String?    // comma-separated meta keywords
+  tags            String[]   @default([]) // topical tags (also used for related posts)
+  faqs            Json?      // [{ q, a }] — rendered + emitted as FAQPage JSON-LD
+  status          PostStatus @default(DRAFT)
+  publishedAt     DateTime?  // set when first published; drives ordering + sitemap
+  authorId        String?    // optional link to the LMS user who wrote it
+  author          User?      @relation("AuthorPosts", fields: [authorId], references: [id], onDelete: SetNull)
+  authorName      String?    // display name fallback when authorId is null (e.g. agent-authored)
+  topic           BlogTopic? @relation("TopicPost") // the queue row that produced this post, if any
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([slug])
+  @@index([status, publishedAt]) // compound: list published posts newest-first
+}
+
+// One queued article topic for the content engine. The n8n workflow claims the
+// highest-priority QUEUED row, drafts it with Claude, and creates a DRAFT Post.
+model BlogTopic {
+  id         String      @id @default(cuid())
+  topicTitle String      // working title / angle for the article
+  seoKeyword String?     // target SEO keyword
+  geoQuery   String?     // natural-language GEO question the article should answer
+  cluster    String?     // keyword-map cluster (A–E)
+  intent     String?     // TOFU / MOFU / BOFU
+  priority   String      @default("P2") // P1 / P2 / P3 — claim order is ascending
+  status     TopicStatus @default(QUEUED)
+  notes      String?     @db.Text // guidance for the drafter (angle, links, etc.)
+  lastError  String?     @db.Text // populated when status = ERROR
+  postId     String?     @unique  // the Post this topic produced (1:1)
+  post       Post?       @relation("TopicPost", fields: [postId], references: [id], onDelete: SetNull)
+  draftedAt  DateTime?   // when the engine produced a draft
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([status, priority]) // claim-next: highest-priority QUEUED first
+}
+
+// ─── Quran Recitation ─────────────────────────────────────────
+
+// Reference data — 604 pages, seeded once, never edited.
+model QuranPage {
+  pageNumber     Int     @id
+  juzNumber      Int
+  hizbNumber     Int     // 1–60 (each juz has 2 hizb)
+  surahNumber    Int     // first surah that begins on this page
+  surahNameEn    String
+  surahNameAr    String
+  ayahStart      Int     // ayah where this page begins (within surahNumber)
+  isStartOfSurah Boolean @default(false) // true when a new surah starts exactly at ayahStart
+
+  attempts  PageAttempt[]
+  bookmarks QuranBookmark[]
+
+  @@index([juzNumber])
+  @@index([surahNumber])
+}
+
+// Lookup table — ~20 Tajweed rules, seeded once.
+model TajweedRule {
+  id          String          @id   // e.g. "IKHFA", "IDGHAAM_BIGHUNNA"
+  nameEn      String
+  nameAr      String
+  category    TajweedCategory
+  description String
+
+  errors PageError[]
+}
+
+enum TajweedCategory {
+  NUN_SAKINA_TANWEEN
+  MEEM_SAKINA
+  MADD
+  HEAVY_LIGHT
+  STOPPING_WAQF
+  RECITATION_STYLE
+}
+
+// One teaching event — wraps (or stands alone from) an existing Zoom Session.
+model RecitationSession {
+  id            String             @id @default(cuid())
+  studentId     String
+  teacherId     String
+  zoomSessionId String?            // FK → Session.id (optional — not every session uses Zoom)
+  trackType     TrackType          @default(RECITATION)
+  status        RecitationStatus   @default(SCHEDULED)
+  scheduledAt   DateTime
+  startedAt     DateTime?
+  endedAt       DateTime?
+  durationMins  Int?
+  overallNotes  String?            @db.Text
+  audioUrl      String?            // B2 object key
+
+  student  User                @relation("StudentRecitationSessions", fields: [studentId], references: [id])
+  teacher  User                @relation("TeacherRecitationSessions", fields: [teacherId], references: [id])
+  attempts PageAttempt[]
+
+  @@index([studentId, scheduledAt])
+  @@index([teacherId, scheduledAt])
+  @@index([studentId, status])
+}
+
+enum TrackType {
+  RECITATION
+  HIFZ
+  REVISION
+}
+
+enum RecitationStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// Append-only event log — one row per page worked in a session. Never updated.
+model PageAttempt {
+  id           String    @id @default(cuid())
+  sessionId    String
+  studentId    String    // denormalized — avoids join through session
+  teacherId    String    // denormalized — who assessed this specific page
+  pageNumber   Int
+  attemptOrder Int       // sequence within the session (1st page = 1, 2nd = 2, …)
+  status       PageStatus
+  masteryScore Int?      // 0–100, teacher's subjective judgment
+  teacherNotes String?   @db.Text
+  createdAt    DateTime  @default(now())
+
+  session RecitationSession @relation(fields: [sessionId], references: [id])
+  student User             @relation("StudentPageAttempts", fields: [studentId], references: [id])
+  teacher User             @relation("TeacherPageAttempts", fields: [teacherId], references: [id])
+  page    QuranPage        @relation(fields: [pageNumber], references: [pageNumber])
+  errors  PageError[]
+
+  @@index([studentId, pageNumber])    // "all attempts by student on page X"
+  @@index([studentId, createdAt])     // student timeline
+  @@index([teacherId, createdAt])     // teacher accountability
+  @@index([pageNumber])               // platform-wide page analytics
+  @@index([sessionId, attemptOrder])  // ordered pages within a session
+}
+
+enum PageStatus {
+  INTRODUCED    // first time this page was opened
+  PRACTICING    // revisiting, not yet mastered
+  COMPLETED     // teacher marked as mastered
+  NEEDS_REVIEW  // flagged — must appear in next session suggestion
+}
+
+// Normalized Tajweed errors per attempt — NOT stored as JSON.
+model PageError {
+  id         String        @id @default(cuid())
+  attemptId  String
+  ruleId     String
+  ayahNumber Int?          // which ayah on the page the error occurred
+  wordNumber Int?          // optional — more precise location
+  severity   ErrorSeverity
+  note       String?       // teacher's specific comment on this error
+  createdAt  DateTime      @default(now())
+
+  attempt PageAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  rule    TajweedRule @relation(fields: [ruleId], references: [id])
+
+  @@index([attemptId])
+  @@index([ruleId])
+  @@index([attemptId, ruleId])
+}
+
+enum ErrorSeverity {
+  MINOR     // noticed and self-corrected
+  MODERATE  // needed prompting
+  MAJOR     // consistent; requires dedicated revision
+}
+
+// ─── Quran Reader ─────────────────────────────────────────────
+
+enum LessonStatus {
+  NOT_STARTED
+  EXCELLENT
+  COMPLETED
+  REVISION
+  WEAK
+}
+
+// Upsertable current-lesson state per student (not append-only)
+model QuranStudentProgress {
+  id             String       @id @default(cuid())
+  studentId      String       @unique
+  lastTeacherId  String?
+  currentPage    Int          @default(1)
+  currentSurah   Int?
+  currentAyah    Int?
+  currentJuz     Int?
+  lessonStatus   LessonStatus @default(NOT_STARTED)
+  teacherNotes   String?      @db.Text
+  nextLessonPage Int?
+  nextLessonAyah Int?
+  updatedAt      DateTime     @updatedAt
+
+  student     User  @relation("StudentQuranProgress",  fields: [studentId],     references: [id])
+  lastTeacher User? @relation("TeacherLastTaught",     fields: [lastTeacherId], references: [id])
+
+  @@index([studentId])
+}
+
+// Teacher bookmarks for a student's Mushaf position
+model QuranBookmark {
+  id          String   @id @default(cuid())
+  teacherId   String
+  studentId   String
+  pageNumber  Int
+  surahNumber Int?
+  ayahNumber  Int?
+  note        String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  teacher User      @relation("TeacherBookmarks", fields: [teacherId], references: [id])
+  student User      @relation("StudentBookmarks", fields: [studentId], references: [id])
+  page    QuranPage @relation(fields: [pageNumber],  references: [pageNumber])
+
+  @@index([teacherId, studentId])
+  @@index([studentId])
+}
+
+// ─── Qaida Module (book-agnostic — supports Noorani, Madani, Baghdadi, etc.) ──
+
+// Registry of books. Seed one row per book; never hard-code "Noorani Qaida" in routes.
+model QaidaBook {
+  id          String   @id @default(cuid())
+  slug        String   @unique   // "noorani-qaida", "madani-qaida", …
+  title       String
+  description String?
+  totalPages  Int
+  imageFolder String   @default("NooraniQaida")  // subfolder served at /qaida-pages/:folder/:file.png
+  isActive    Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  progress  QaidaStudentProgress[]
+  bookmarks QaidaBookmark[]
+  notes     QaidaLessonNote[]
+  history   QaidaLessonHistory[]
+}
+
+enum QaidaProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  REVISION_REQUIRED
+}
+
+// Upsertable current-lesson state per (student, book). Not append-only.
+model QaidaStudentProgress {
+  id                   String              @id @default(cuid())
+  studentId            String
+  teacherId            String?
+  bookId               String
+  currentPage          Int                 @default(1)
+  completedPages       Int[]               @default([])
+  completionPercentage Float               @default(0)
+  status               QaidaProgressStatus @default(NOT_STARTED)
+  lastLessonDate       DateTime?
+  teacherNotes         String?             @db.Text
+  nextPage             Int?
+  revisionRequired     Boolean             @default(false)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  student User      @relation("QaidaStudentProgress", fields: [studentId], references: [id])
+  teacher User?     @relation("QaidaTeacherProgress", fields: [teacherId], references: [id])
+  book    QaidaBook @relation(fields: [bookId], references: [id])
+
+  @@unique([studentId, bookId])
+  @@index([studentId])
+  @@index([bookId])
+  @@index([teacherId])
+}
+
+// Teacher bookmarks for a student's Qaida page position
+model QaidaBookmark {
+  id         String   @id @default(cuid())
+  teacherId  String
+  studentId  String
+  bookId     String
+  pageNumber Int
+  note       String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  teacher User      @relation("QaidaTeacherBookmarks", fields: [teacherId], references: [id])
+  student User      @relation("QaidaStudentBookmarks", fields: [studentId], references: [id])
+  book    QaidaBook @relation(fields: [bookId], references: [id])
+
+  @@index([teacherId, studentId])
+  @@index([studentId])
+  @@index([bookId])
+}
+
+// Teacher lesson notes — one row per teaching event (can have many per page)
+model QaidaLessonNote {
+  id               String   @id @default(cuid())
+  studentId        String
+  teacherId        String
+  bookId           String
+  pageNumber       Int
+  lessonDate       DateTime
+  note             String   @db.Text
+  nextPage         Int?
+  revisionRequired Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  student User      @relation("QaidaStudentNotes", fields: [studentId], references: [id])
+  teacher User      @relation("QaidaTeacherNotes", fields: [teacherId], references: [id])
+  book    QaidaBook @relation(fields: [bookId], references: [id])
+
+  @@index([studentId, bookId])
+  @@index([teacherId])
+  @@index([pageNumber])
+}
+
+// Append-only history — one row per page taught in a session
+model QaidaLessonHistory {
+  id         String   @id @default(cuid())
+  studentId  String
+  teacherId  String
+  bookId     String
+  pageNumber Int
+  lessonDate DateTime @default(now())
+  note       String?  @db.Text
+  nextPage   Int?
+  createdAt  DateTime @default(now())
+
+  student User      @relation("QaidaStudentHistory", fields: [studentId], references: [id])
+  teacher User      @relation("QaidaTeacherHistory", fields: [teacherId], references: [id])
+  book    QaidaBook @relation(fields: [bookId], references: [id])
+
+  @@index([studentId, bookId])
+  @@index([teacherId])
+}
+
+// ─── Islamic Learning Module ──────────────────────────────────
+
+enum IslamicContentType {
+  DUA
+  SALAH
+  WUDU
+  KALIMA
+}
+
+// Categories: Dua categories (Washroom, Eating…), Salah prayers, Wudu, Kalimas
+model IslamicCategory {
+  id          String             @id @default(cuid())
+  name        String
+  slug        String             @unique
+  type        IslamicContentType?  // null = general (shows under ALL tab)
+  description String?
+  icon        String?
+  order       Int                @default(0)
+  isActive    Boolean            @default(true)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  items IslamicItem[]
+}
+
+// Unified content model: duas, salah steps, wudu steps, kalimas
+model IslamicItem {
+  id                 String             @id @default(cuid())
+  categoryId         String
+  type               IslamicContentType
+  title              String
+  arabicText         String?            @db.Text
+  transliteration    String?            @db.Text
+  englishTranslation String?            @db.Text
+  urduTranslation    String?            @db.Text
+  // Salah / Wudu step fields
+  stepNumber         Int?
+  prayerName         String?            // Fajr | Zuhr | Asr | Maghrib | Isha
+  rakatCount         Int?
+  rakatType          String?            // Fard | Sunnah | Nafl | Witr
+  // Media
+  imageUrl           String?
+  audioUrl           String?
+  order              Int                @default(0)
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  category  IslamicCategory  @relation(fields: [categoryId], references: [id])
+  progress  IslamicProgress[]
+  bookmarks IslamicBookmark[]
+
+  @@index([categoryId])
+  @@index([type])
+}
+
+// Student completion tracking — one row per (student, item), upserted
+model IslamicProgress {
+  id          String    @id @default(cuid())
+  studentId   String
+  teacherId   String?
+  itemId      String
+  completed   Boolean   @default(false)
+  completedAt DateTime?
+  notes       String?   @db.Text
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  student User        @relation("IslamicProgressStudent", fields: [studentId], references: [id])
+  teacher User?       @relation("IslamicProgressTeacher", fields: [teacherId], references: [id])
+  item    IslamicItem @relation(fields: [itemId], references: [id])
+
+  @@unique([studentId, itemId])
+  @@index([studentId])
+  @@index([itemId])
+}
+
+// Teacher/student bookmarks / favourites
+model IslamicBookmark {
+  id        String   @id @default(cuid())
+  studentId String
+  teacherId String
+  itemId    String
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  student User        @relation("IslamicBookmarkStudent", fields: [studentId], references: [id])
+  teacher User        @relation("IslamicBookmarkTeacher", fields: [teacherId], references: [id])
+  item    IslamicItem @relation(fields: [itemId], references: [id])
+
+  @@index([studentId])
+  @@index([itemId])
+}
+
+// ─── Payments (Stripe) ────────────────────────────────────────
+// Optional saved amount admins can pick when generating a payment link.
+// Admins may also always enter a custom amount instead of using a Plan.
+model Plan {
+  id        String      @id @default(cuid())
+  name      String
+  amount    Int                          // minor units (cents)
+  currency  String      @default("cad")  // ISO 4217, lowercase
+  type      PaymentType @default(ONE_TIME)
+  interval  String?                      // "month" | "year" — SUBSCRIPTION only
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  payments  Payment[]
+}
+
+// One payment (one-time or subscription) generated for a student. Amount and
+// currency are snapshotted so later Plan edits never rewrite payment history.
+// Stripe ids are filled progressively by the webhook; the @unique columns are
+// the idempotency anchors.
+model Payment {
+  id                    String        @id @default(cuid())
+  studentId             String
+  student               User          @relation("StudentPayments", fields: [studentId], references: [id])
+  planId                String?
+  plan                  Plan?         @relation(fields: [planId], references: [id])
+
+  type                  PaymentType
+  amount                Int                          // minor units (cents) — snapshot
+  currency              String                       // snapshot, e.g. "cad"
+  status                PaymentStatus @default(PENDING)
+  description           String?
+  endDate               DateTime?                    // → Stripe subscription cancel_at
+
+  stripeSessionId       String?       @unique
+  stripeCustomerId      String?
+  stripeSubscriptionId  String?       @unique
+  stripePaymentIntentId String?
+  checkoutUrl           String?       @db.Text       // session.url the admin shares
+
+  emailedAt             DateTime?
+  paidAt                DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  @@index([studentId])
+  @@index([status])
+  @@index([stripeSessionId])
+  @@index([stripeSubscriptionId])
+}

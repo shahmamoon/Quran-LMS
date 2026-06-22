@@ -1,0 +1,87 @@
+# ═══════════════════════════════════════════════════════════════
+#  Online Quran Academy — Demo Docker Compose
+#
+#  Mirrors docker-compose.prod.yml for the demo environment.
+#    • Container: quranacademy-demo   Port: 127.0.0.1:4003:4000
+#    • Database:  quranacademy_demo   (separate from production)
+#    • Caddy:     demo.quranacademy.com → localhost:4003
+#
+#  The demo database is wiped and reseeded on every deploy.
+#  Do NOT point this at the production database.
+#
+#  Secrets injected by Doppler (demo config):
+#    DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+#      docker compose -f docker-compose.demo.yml up -d
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  app:
+    image: ghcr.io/muddsarn8n-lgtm/quranacademy:demo
+    container_name: quranacademy-demo
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: ${PORT:-4000}
+      DATABASE_URL: postgresql://${DB_USER:-qauser}:${DB_PASS}@n8n-postgres-1:5432/${DB_NAME:-quranacademy_demo}?connection_limit=20&pool_timeout=30
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-2h}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      # App URL — Doppler demo config sets this to https://demo.quranacademy.com
+      CLIENT_URL: ${CLIENT_URL}
+      # Email
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+      # Zoom
+      ZOOM_ACCOUNT_ID: ${ZOOM_ACCOUNT_ID}
+      ZOOM_CLIENT_ID: ${ZOOM_CLIENT_ID}
+      ZOOM_CLIENT_SECRET: ${ZOOM_CLIENT_SECRET}
+      # Per-teacher Zoom OAuth (optional)
+      ZOOM_OAUTH_CLIENT_ID: ${ZOOM_OAUTH_CLIENT_ID:-}
+      ZOOM_OAUTH_CLIENT_SECRET: ${ZOOM_OAUTH_CLIENT_SECRET:-}
+      ZOOM_REDIRECT_URI: ${ZOOM_REDIRECT_URI:-}
+      # Google Calendar / Meet OAuth (optional)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # Stripe payments (optional — use TEST keys in demo)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Cloudflare R2 for session recordings (optional)
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_REGION: ${R2_REGION:-auto}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      # Daily.co (optional)
+      DAILY_API_KEY: ${DAILY_API_KEY:-}
+      # Demo mode — shows quick-login buttons on login page
+      DEMO_MODE: ${DEMO_MODE:-false}
+    volumes:
+      - quranacademy_demo_uploads:/app/uploads
+    # Port 4003 — isolated from prod (4002), buildaiwithus (4000), buildaiwithus-demo (4001)
+    ports:
+      - "127.0.0.1:4003:4000"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - n8n_default
+
+volumes:
+  quranacademy_demo_uploads:
+
+networks:
+  n8n_default:
+    external: true

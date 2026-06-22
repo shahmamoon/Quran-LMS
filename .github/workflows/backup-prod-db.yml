@@ -1,0 +1,62 @@
+name: 💾 Backup Prod DB (daily)
+
+# Daily pg_dump of the production database stored as a GitHub Actions artifact
+# (30-day retention). Off-VPS copy so a VPS loss doesn't wipe the only copy.
+#
+# Restore:
+#   gunzip -c quranacademy.sql.gz | docker exec -i n8n-postgres-1 psql -U qauser -d quranacademy
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    name: Dump prod DB → GitHub artifact
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Stamp date
+        id: stamp
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Stream pg_dump from the VPS into a local .sql.gz
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p artifact ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+
+          SSH_OPTS="-i $HOME/.ssh/id_deploy -p ${SSH_PORT:-22} \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 -o BatchMode=yes"
+
+          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" \
+            'docker exec n8n-postgres-1 pg_dump -U qauser -d quranacademy --no-owner --no-privileges | gzip' \
+            > artifact/quranacademy.sql.gz 2> dump-err.txt
+          SSH_RC=$?
+          rm -f ~/.ssh/id_deploy
+          if [ "$SSH_RC" -ne 0 ]; then
+            echo "❌ ssh/dump failed (rc=$SSH_RC):"
+            grep -aiv 'warning: permanently added' dump-err.txt | tail -5
+            exit 1
+          fi
+
+          SIZE=$(stat -c%s artifact/quranacademy.sql.gz)
+          echo "dump size: $SIZE bytes"
+          [ "$SIZE" -ge 1000 ] || { echo "❌ dump <1KB — failing so a bad backup isn't stored"; exit 1; }
+          gunzip -t artifact/quranacademy.sql.gz && echo "✅ gzip integrity OK"
+
+      - name: Upload as GitHub artifact (30-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ steps.stamp.outputs.date }}
+          path: artifact/quranacademy.sql.gz
+          retention-days: 30
+          if-no-files-found: error

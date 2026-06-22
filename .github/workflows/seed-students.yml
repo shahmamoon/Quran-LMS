@@ -1,0 +1,52 @@
+name: 👥 Seed Students (production)
+
+# Manual only. Idempotent + non-destructive — upserts a fixed set of STUDENT
+# accounts by email. Never resets a password or clobbers an existing account.
+on:
+  workflow_dispatch:
+
+jobs:
+  seed-students:
+    name: Create student accounts
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Seed via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GH_SHA,GHCR_TOKEN,GH_REPO
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "📥 Fetching seed script from GitHub ..."
+            mkdir -p scripts
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/scripts/seed-students.ts" \
+              -o scripts/seed-students.ts
+
+            echo "👥 Seeding students ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -v "$(pwd)/scripts:/app/scripts" \
+              app \
+              node_modules/.bin/tsx scripts/seed-students.ts
+
+            echo "✅ Student seed complete!"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Student Seed ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 5 STUDENT accounts upserted (default password 123456, grade Upskill)" >> $GITHUB_STEP_SUMMARY

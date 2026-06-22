@@ -1,0 +1,51 @@
+name: 🔄 Reset Production Database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset-prod:
+    name: Wipe + Create Admin Account
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Reset production DB via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GH_SHA,GHCR_TOKEN,GH_REPO
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "📥 Fetching reset script from GitHub ..."
+            mkdir -p scripts
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/scripts/reset-prod.ts" \
+              -o scripts/reset-prod.ts
+
+            echo "🔄 Running production database reset ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -v "$(pwd)/scripts:/app/scripts" \
+              app \
+              node_modules/.bin/tsx scripts/reset-prod.ts
+
+            echo "✅ Production DB reset complete!"
+
+      - name: Reset summary
+        if: always()
+        run: |
+          echo "## Production Reset ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Action:** Wiped all data, created single admin account" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://quranacademy.com/lms/login" >> $GITHUB_STEP_SUMMARY

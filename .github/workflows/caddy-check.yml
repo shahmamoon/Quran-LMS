@@ -1,0 +1,25 @@
+name: 🔍 Caddy Diagnostics
+on: workflow_dispatch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "=== Caddy logs (last 40 lines) ==="
+            docker logs n8n-caddy-1 --tail 40 2>&1
+            echo ""
+            echo "=== Caddyfile ==="
+            docker exec n8n-caddy-1 cat /etc/caddy/Caddyfile 2>/dev/null || echo "No Caddyfile found"
+            echo ""
+            echo "=== App container status ==="
+            docker ps --filter name=quranacademy --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            echo ""
+            echo "=== Direct app health ==="
+            curl -sf http://localhost:4002/api/health || echo "App not responding on 4002"

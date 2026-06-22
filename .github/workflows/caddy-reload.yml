@@ -1,0 +1,22 @@
+name: 🔄 Reload Caddy
+on: workflow_dispatch
+jobs:
+  reload:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            echo "🔄 Reloading Caddy to reset ACME retry timers..."
+            docker exec n8n-caddy-1 caddy reload --config /etc/caddy/Caddyfile --force 2>&1
+            echo "✅ Caddy reloaded — ACME challenges will retry immediately"
+            echo ""
+            echo "⏳ Waiting 15s then checking logs for cert issuance..."
+            sleep 15
+            docker logs n8n-caddy-1 --tail 20 2>&1 | grep -E "(obtain|certificate|error|challenge|quranacademy)" || true

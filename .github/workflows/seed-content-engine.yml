@@ -1,0 +1,43 @@
+name: 🌱 Seed Content Engine (prod)
+
+# Manual only. Idempotent + non-destructive: upserts the Content Bot service
+# account and the P1 blog topic queue. Safe to re-run. Does NOT wipe data.
+on:
+  workflow_dispatch:
+
+jobs:
+  seed-content-engine:
+    name: Seed Content Bot + topic queue
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Seed via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          CONTENT_BOT_PASSWORD: ${{ secrets.CONTENT_BOT_PASSWORD }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,CONTENT_BOT_PASSWORD
+          script: |
+            set -e
+            cd /opt/quranacademy
+
+            echo "🌱 Seeding content engine (idempotent, non-destructive) ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN doppler run -- \
+              docker compose -f docker-compose.prod.yml run --rm \
+              -e CONTENT_BOT_PASSWORD="$CONTENT_BOT_PASSWORD" \
+              app \
+              node_modules/.bin/tsx prisma/seed-content-engine.ts
+
+            echo "✅ Content engine seed complete."
+
+      - name: Seed summary
+        if: always()
+        run: |
+          echo "## Content engine seed ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Upserts the Content Bot (content-bot@quranacademy.com, role TEACHER) + 11 P1 topics." >> $GITHUB_STEP_SUMMARY
+          echo "- Idempotent: re-running is safe and non-destructive." >> $GITHUB_STEP_SUMMARY

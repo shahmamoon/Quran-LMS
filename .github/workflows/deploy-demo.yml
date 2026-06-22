@@ -1,0 +1,157 @@
+name: 🎭 Deploy Demo Environment
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/quranacademy
+
+# ═══════════════════════════════════════════════════════════════
+jobs:
+# ── Job 1: Build Docker image → push to GHCR
+# ═══════════════════════════════════════════════════════════════
+  build:
+    name: 🐳 Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=demo
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+# ═══════════════════════════════════════════════════════════════
+# ── Job 2: Deploy to demo environment
+# ═══════════════════════════════════════════════════════════════
+  deploy-demo:
+    name: 🎭 Deploy to Demo
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - name: Deploy Demo via Doppler + Docker Compose
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN_DEMO: ${{ secrets.DOPPLER_TOKEN_DEMO }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GH_REPO: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN_DEMO,GHCR_TOKEN,GHCR_USER,GH_REPO,GH_SHA
+          script: |
+            set -e
+            mkdir -p /opt/quranacademy-demo
+            cd /opt/quranacademy-demo
+
+            echo "📥 Fetching docker-compose.demo.yml from GitHub ..."
+            curl -fsSL \
+              -H "Authorization: token $GHCR_TOKEN" \
+              "https://raw.githubusercontent.com/$GH_REPO/$GH_SHA/docker-compose.demo.yml" \
+              -o docker-compose.demo.yml
+
+            echo "🔑 Logging in to GHCR ..."
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            echo "🔄 Pulling demo image ..."
+            docker image rm ghcr.io/muddsarn8n-lgtm/quranacademy:demo 2>/dev/null || true
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+              docker compose -f docker-compose.demo.yml pull app
+
+            echo "🗄️  Ensuring demo database exists ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- sh -c '
+              docker exec n8n-postgres-1 psql -U postgres -tc \
+                "SELECT 1 FROM pg_roles WHERE rolname='"'"'$DB_USER'"'"'" | grep -q 1 || \
+              docker exec n8n-postgres-1 psql -U postgres -c \
+                "CREATE USER $DB_USER WITH PASSWORD '"'"'$DB_PASS'"'"';"
+              docker exec n8n-postgres-1 psql -U postgres -tc \
+                "SELECT 1 FROM pg_database WHERE datname='"'"'$DB_NAME'"'"'" | grep -q 1 || \
+              docker exec n8n-postgres-1 psql -U postgres -c \
+                "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+            '
+
+            echo "🗄️  Running migrations on demo DB ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+              docker compose -f docker-compose.demo.yml run --rm app \
+              node_modules/.bin/prisma migrate deploy
+
+            echo "🌱 Wiping and reseeding demo database ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+              docker compose -f docker-compose.demo.yml run --rm app \
+              node_modules/.bin/tsx prisma/seed.ts
+
+            echo "♻️  Restarting demo container ..."
+            DOPPLER_TOKEN=$DOPPLER_TOKEN_DEMO doppler run -- \
+              docker compose -f docker-compose.demo.yml up -d --remove-orphans
+
+            echo "⚙️  Configuring Caddy for demo subdomain ..."
+            docker exec n8n-caddy-1 sh -c '
+              if ! grep -q "demo.quranacademy.com" /etc/caddy/Caddyfile 2>/dev/null; then
+                printf "\ndemo.quranacademy.com {\n    reverse_proxy localhost:4003\n    encode gzip\n}\n" >> /etc/caddy/Caddyfile
+                caddy reload --config /etc/caddy/Caddyfile --force 2>&1 \
+                  && echo "Caddy reloaded with demo subdomain" \
+                  || echo "Caddy reload failed — check Caddyfile syntax"
+              else
+                echo "Caddy already configured for demo.quranacademy.com"
+              fi
+            '
+
+            echo "⏳ Checking demo health ..."
+            sleep 8
+            curl -sf http://localhost:4003/api/health \
+              && echo "✅ Demo deployment successful!" \
+              || (echo "❌ Demo health check failed!" && exit 1)
+
+            docker image prune -f
+
+      - name: Demo deployment summary
+        if: always()
+        run: |
+          echo "## Demo Deployment ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://demo.quranacademy.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`ghcr.io/${{ env.IMAGE_NAME }}:demo\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **DB:** \`quranacademy_demo\` (wiped + reseeded)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Demo credentials:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Admin: \`admin@quranacademy.com\` / \`Admin@123!\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Teacher: \`teacher@quranacademy.com\` / \`Teacher@123!\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Student: \`student@quranacademy.com\` / \`Student@123!\`" >> $GITHUB_STEP_SUMMARY

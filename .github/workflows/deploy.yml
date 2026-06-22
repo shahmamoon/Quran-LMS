@@ -1,0 +1,132 @@
+name: 🚀 Build & Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/quranacademy
+
+# ═══════════════════════════════════════════════════════════════
+jobs:
+# ── Job 1: Build Docker image → push to GHCR
+# ═══════════════════════════════════════════════════════════════
+  build:
+    name: 🐳 Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+# ═══════════════════════════════════════════════════════════════
+# ── Job 2: SSH deploy — secrets injected via Doppler
+# ═══════════════════════════════════════════════════════════════
+  deploy:
+    name: 🌍 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - name: Checkout (for compose files)
+        uses: actions/checkout@v4
+
+      - name: Deploy via Doppler + Docker Compose
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GH_REPO: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DOPPLER_TOKEN,GHCR_TOKEN,GHCR_USER,GH_REPO,GH_SHA
+          script: |
+            set -e
+            cd /docker/aitechservices-n8n
+
+            echo "🔑 Logging in to GHCR ..."
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            echo "🔄 Pulling latest image ..."
+            docker image rm ghcr.io/muddsarn8n-lgtm/quranacademy:latest 2>/dev/null || true
+            docker compose pull quranacademy
+
+            echo "🗄️  Ensuring quranacademy database exists ..."
+            docker exec aitechservices-n8n-postgres-1 psql -U aitechservices_n8n -tc \
+              "SELECT 1 FROM pg_database WHERE datname='quranacademy'" | grep -q 1 || \
+            docker exec aitechservices-n8n-postgres-1 psql -U aitechservices_n8n -c \
+              "CREATE DATABASE quranacademy OWNER aitechservices_n8n;"
+
+            echo "🔄 Refreshing quranacademy.env from Doppler ..."
+            doppler secrets download --no-file --format env \
+              --project quranacademy --config prd \
+              --token $DOPPLER_TOKEN > quranacademy.env
+            sed -i 's|aitechservices-n8n-postgres-1|postgres|g' quranacademy.env
+
+            echo "🗄️  Running migrations ..."
+            docker compose run --rm --no-deps quranacademy \
+              node_modules/.bin/prisma migrate deploy
+
+            echo "♻️  Restarting app ..."
+            docker compose up -d --no-deps quranacademy
+
+            echo "⏳ Checking health ..."
+            sleep 8
+            curl -sf http://localhost:4002/api/health \
+              && echo "✅ Deployment successful!" \
+              || (echo "❌ Health check failed!" && exit 1)
+
+            docker image prune -f
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Production Deployment ${{ job.status == 'success' && '✅ succeeded' || '❌ failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://quranacademy.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`ghcr.io/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Seed:** skipped (production data is real — never auto-seeded)" >> $GITHUB_STEP_SUMMARY
